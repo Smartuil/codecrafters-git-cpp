@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <iomanip>
+#include <algorithm>
 #include <zlib.h>
 #include <openssl/sha.h>
 
@@ -90,6 +91,107 @@ std::string computeSha1(const std::string& data)
         oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(hash[i]);
     }
     return oss.str();
+}
+
+// Write object to .git/objects and return hex SHA
+std::string writeObject(const std::string& objectData)
+{
+    std::string sha1Hex = computeSha1(objectData);
+    std::vector<char> compressed = compressZlib(objectData);
+
+    std::string objectDir = ".git/objects/" + sha1Hex.substr(0, 2);
+    std::string objectPath = objectDir + "/" + sha1Hex.substr(2);
+
+    std::filesystem::create_directories(objectDir);
+
+    std::ofstream outFile(objectPath, std::ios::binary);
+    if (outFile.is_open())
+    {
+        outFile.write(compressed.data(), compressed.size());
+        outFile.close();
+    }
+
+    return sha1Hex;
+}
+
+// Write a blob for a file and return hex SHA
+std::string writeBlob(const std::filesystem::path& filePath)
+{
+    std::ifstream file(filePath, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(file)),
+                         std::istreambuf_iterator<char>());
+    file.close();
+
+    std::string blobData = "blob " + std::to_string(content.size()) + '\0' + content;
+    return writeObject(blobData);
+}
+
+// Recursively write a tree for a directory and return hex SHA
+std::string writeTree(const std::filesystem::path& dirPath)
+{
+    struct TreeEntry
+    {
+        std::string mode;
+        std::string name;
+        std::string sha;  // raw 20-byte SHA
+    };
+
+    std::vector<TreeEntry> entries;
+
+    for (const auto& entry : std::filesystem::directory_iterator(dirPath))
+    {
+        std::string name = entry.path().filename().string();
+
+        // Skip .git directory
+        if (name == ".git") continue;
+
+        TreeEntry treeEntry;
+        treeEntry.name = name;
+
+        if (entry.is_directory())
+        {
+            treeEntry.mode = "40000";
+            std::string sha1Hex = writeTree(entry.path());
+            // Convert hex SHA to raw bytes
+            for (size_t i = 0; i < 40; i += 2)
+            {
+                treeEntry.sha += static_cast<char>(std::stoi(sha1Hex.substr(i, 2), nullptr, 16));
+            }
+        }
+        else if (entry.is_regular_file())
+        {
+            treeEntry.mode = "100644";
+            std::string sha1Hex = writeBlob(entry.path());
+            // Convert hex SHA to raw bytes
+            for (size_t i = 0; i < 40; i += 2)
+            {
+                treeEntry.sha += static_cast<char>(std::stoi(sha1Hex.substr(i, 2), nullptr, 16));
+            }
+        }
+        else
+        {
+            continue;  // Skip other types
+        }
+
+        entries.push_back(treeEntry);
+    }
+
+    // Sort entries alphabetically by name
+    std::sort(entries.begin(), entries.end(), [](const TreeEntry& a, const TreeEntry& b) {
+        return a.name < b.name;
+    });
+
+    // Build tree content
+    std::string treeContent;
+    for (const auto& entry : entries)
+    {
+        treeContent += entry.mode + " " + entry.name + '\0' + entry.sha;
+    }
+
+    // Create tree object with header
+    std::string treeData = "tree " + std::to_string(treeContent.size()) + '\0' + treeContent;
+
+    return writeObject(treeData);
 }
 
 int main(int argc, char *argv[])
@@ -183,6 +285,19 @@ int main(int argc, char *argv[])
             // Extract and print content (without trailing newline)
             std::string content = decompressed.substr(nullPos + 1);
             std::cout << content;
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
+            return EXIT_FAILURE;
+        }
+    }
+    else if (command == "write-tree")
+    {
+        try
+        {
+            std::string treeSha = writeTree(".");
+            std::cout << treeSha << "\n";
         }
         catch (const std::exception& e)
         {
