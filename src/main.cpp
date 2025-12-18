@@ -248,6 +248,108 @@ int main(int argc, char *argv[])
         // Print SHA-1 hash to stdout
         std::cout << sha1Hash << "\n";
     }
+    else if (command == "ls-tree")
+    {
+        bool nameOnly = false;
+        std::string treeSha;
+
+        // Parse arguments
+        for (int i = 2; i < argc; ++i)
+        {
+            std::string arg = argv[i];
+            if (arg == "--name-only")
+            {
+                nameOnly = true;
+            }
+            else
+            {
+                treeSha = arg;
+            }
+        }
+
+        if (treeSha.empty() || treeSha.length() != 40)
+        {
+            std::cerr << "Usage: ls-tree [--name-only] <tree_sha>\n";
+            return EXIT_FAILURE;
+        }
+
+        // Build path to tree object
+        std::string objectPath = ".git/objects/" + treeSha.substr(0, 2) + "/" + treeSha.substr(2);
+
+        // Read compressed file
+        std::ifstream file(objectPath, std::ios::binary);
+        if (!file.is_open())
+        {
+            std::cerr << "Failed to open object file: " << objectPath << "\n";
+            return EXIT_FAILURE;
+        }
+
+        std::vector<char> compressedData((std::istreambuf_iterator<char>(file)),
+                                          std::istreambuf_iterator<char>());
+        file.close();
+
+        try
+        {
+            // Decompress the data
+            std::string decompressed = decompressZlib(compressedData);
+
+            // Find the null byte that separates header from entries
+            size_t nullPos = decompressed.find('\0');
+            if (nullPos == std::string::npos)
+            {
+                std::cerr << "Invalid tree format\n";
+                return EXIT_FAILURE;
+            }
+
+            // Parse entries: each entry is "<mode> <name>\0<20-byte SHA>"
+            size_t pos = nullPos + 1;
+            while (pos < decompressed.size())
+            {
+                // Find space between mode and name
+                size_t spacePos = decompressed.find(' ', pos);
+                if (spacePos == std::string::npos) break;
+
+                std::string mode = decompressed.substr(pos, spacePos - pos);
+
+                // Find null byte after name
+                size_t nameNullPos = decompressed.find('\0', spacePos + 1);
+                if (nameNullPos == std::string::npos) break;
+
+                std::string name = decompressed.substr(spacePos + 1, nameNullPos - spacePos - 1);
+
+                // Skip the 20-byte SHA (raw bytes, not hex)
+                pos = nameNullPos + 1 + 20;
+
+                if (nameOnly)
+                {
+                    std::cout << name << "\n";
+                }
+                else
+                {
+                    // Convert raw SHA to hex
+                    std::ostringstream shaHex;
+                    for (int i = 0; i < 20; ++i)
+                    {
+                        shaHex << std::hex << std::setfill('0') << std::setw(2)
+                               << static_cast<int>(static_cast<unsigned char>(decompressed[nameNullPos + 1 + i]));
+                    }
+
+                    // Determine type based on mode
+                    std::string type = (mode == "40000") ? "tree" : "blob";
+
+                    // Pad mode to 6 digits
+                    while (mode.length() < 6) mode = "0" + mode;
+
+                    std::cout << mode << " " << type << " " << shaHex.str() << "\t" << name << "\n";
+                }
+            }
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
+            return EXIT_FAILURE;
+        }
+    }
     else
     {
         std::cerr << "Unknown command " << command << '\n';
