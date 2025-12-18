@@ -363,6 +363,61 @@ int main(int argc, char *argv[])
         // Print SHA-1 hash to stdout
         std::cout << sha1Hash << "\n";
     }
+    else if (command == "commit-tree")
+    {
+        // Parse arguments: commit-tree <tree_sha> -p <parent_sha> -m <message>
+        if (argc < 6)
+        {
+            std::cerr << "Usage: commit-tree <tree_sha> -p <parent_sha> -m <message>\n";
+            return EXIT_FAILURE;
+        }
+
+        std::string treeSha = argv[2];
+        std::string parentSha;
+        std::string message;
+
+        for (int i = 3; i < argc; ++i)
+        {
+            std::string arg = argv[i];
+            if (arg == "-p" && i + 1 < argc)
+            {
+                parentSha = argv[++i];
+            }
+            else if (arg == "-m" && i + 1 < argc)
+            {
+                message = argv[++i];
+            }
+        }
+
+        if (treeSha.length() != 40 || parentSha.length() != 40 || message.empty())
+        {
+            std::cerr << "Invalid arguments\n";
+            return EXIT_FAILURE;
+        }
+
+        // Build commit content
+        std::string commitContent;
+        commitContent += "tree " + treeSha + "\n";
+        commitContent += "parent " + parentSha + "\n";
+        commitContent += "author John Doe <john@example.com> 1234567890 +0000\n";
+        commitContent += "committer John Doe <john@example.com> 1234567890 +0000\n";
+        commitContent += "\n";
+        commitContent += message + "\n";
+
+        // Create commit object with header
+        std::string commitData = "commit " + std::to_string(commitContent.size()) + '\0' + commitContent;
+
+        try
+        {
+            std::string commitSha = writeObject(commitData);
+            std::cout << commitSha << "\n";
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Error: " << e.what() << "\n";
+            return EXIT_FAILURE;
+        }
+    }
     else if (command == "ls-tree")
     {
         bool nameOnly = false;
