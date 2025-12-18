@@ -4,7 +4,9 @@
 #include <string>
 #include <sstream>
 #include <vector>
+#include <iomanip>
 #include <zlib.h>
+#include <openssl/sha.h>
 
 std::string decompressZlib(const std::vector<char>& compressedData)
 {
@@ -39,6 +41,55 @@ std::string decompressZlib(const std::vector<char>& compressedData)
 
     inflateEnd(&zs);
     return result;
+}
+
+std::vector<char> compressZlib(const std::string& data)
+{
+    z_stream zs;
+    zs.zalloc = Z_NULL;
+    zs.zfree = Z_NULL;
+    zs.opaque = Z_NULL;
+
+    if (deflateInit(&zs, Z_BEST_COMPRESSION) != Z_OK)
+    {
+        throw std::runtime_error("Failed to initialize zlib for compression");
+    }
+
+    zs.avail_in = data.size();
+    zs.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+
+    std::vector<char> result;
+    char buffer[4096];
+
+    int ret;
+    do
+    {
+        zs.avail_out = sizeof(buffer);
+        zs.next_out = reinterpret_cast<Bytef*>(buffer);
+        ret = deflate(&zs, Z_FINISH);
+        if (ret == Z_STREAM_ERROR)
+        {
+            deflateEnd(&zs);
+            throw std::runtime_error("Failed to compress data");
+        }
+        result.insert(result.end(), buffer, buffer + (sizeof(buffer) - zs.avail_out));
+    } while (ret != Z_STREAM_END);
+
+    deflateEnd(&zs);
+    return result;
+}
+
+std::string computeSha1(const std::string& data)
+{
+    unsigned char hash[SHA_DIGEST_LENGTH];
+    SHA1(reinterpret_cast<const unsigned char*>(data.c_str()), data.size(), hash);
+
+    std::ostringstream oss;
+    for (int i = 0; i < SHA_DIGEST_LENGTH; ++i)
+    {
+        oss << std::hex << std::setfill('0') << std::setw(2) << static_cast<int>(hash[i]);
+    }
+    return oss.str();
 }
 
 int main(int argc, char *argv[])
@@ -138,6 +189,64 @@ int main(int argc, char *argv[])
             std::cerr << "Error: " << e.what() << "\n";
             return EXIT_FAILURE;
         }
+    }
+    else if (command == "hash-object")
+    {
+        if (argc < 4 || std::string(argv[2]) != "-w")
+        {
+            std::cerr << "Usage: hash-object -w <file>\n";
+            return EXIT_FAILURE;
+        }
+
+        std::string filePath = argv[3];
+
+        // Read file content
+        std::ifstream file(filePath, std::ios::binary);
+        if (!file.is_open())
+        {
+            std::cerr << "Failed to open file: " << filePath << "\n";
+            return EXIT_FAILURE;
+        }
+
+        std::string content((std::istreambuf_iterator<char>(file)),
+                             std::istreambuf_iterator<char>());
+        file.close();
+
+        // Create blob format: "blob <size>\0<content>"
+        std::string blobData = "blob " + std::to_string(content.size()) + '\0' + content;
+
+        // Compute SHA-1 hash
+        std::string sha1Hash = computeSha1(blobData);
+
+        // Compress the data
+        std::vector<char> compressedData = compressZlib(blobData);
+
+        // Create directory and write file
+        std::string objectDir = ".git/objects/" + sha1Hash.substr(0, 2);
+        std::string objectPath = objectDir + "/" + sha1Hash.substr(2);
+
+        try
+        {
+            std::filesystem::create_directories(objectDir);
+
+            std::ofstream outFile(objectPath, std::ios::binary);
+            if (!outFile.is_open())
+            {
+                std::cerr << "Failed to create object file: " << objectPath << "\n";
+                return EXIT_FAILURE;
+            }
+
+            outFile.write(compressedData.data(), compressedData.size());
+            outFile.close();
+        }
+        catch (const std::exception& e)
+        {
+            std::cerr << "Error writing object: " << e.what() << "\n";
+            return EXIT_FAILURE;
+        }
+
+        // Print SHA-1 hash to stdout
+        std::cout << sha1Hash << "\n";
     }
     else
     {
